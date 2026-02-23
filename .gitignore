@@ -48,7 +48,7 @@ test1/
 slurm_output/
 output/
 *.npz
-*.csv
+
 
 # Translations
 *.mo
