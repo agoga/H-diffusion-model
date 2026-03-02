@@ -1,0 +1,2 @@
+# Don’t count notebooks in GitHub language statistics
+*.ipynb linguist-language=Python
