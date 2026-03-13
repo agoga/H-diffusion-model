@@ -1,0 +1,91 @@
+"""Hydrogen diffusion/trapping simulation package."""
+
+from .defaults import (
+    DEFAULT_ALOX,
+    DEFAULT_CSI,
+    DEFAULT_POLY,
+    DEFAULT_SIOX,
+    DEFAULT_STRUCTURE,
+    DEFAULT_SAMPLING,
+    DEFAULT_SOLVER,
+    DEFAULT_Y0,
+)
+from .campaign import (
+    Campaign,
+    build_temp_schedule_spec,
+    make_annealing_sweep,
+    make_firing_sweep,
+    make_unfired_sweep,
+    parse_temp_schedule_spec,
+)
+from .cache import CacheStore
+from .result import RunResult, SegmentBoundary
+from .schedule import CompiledSegment, Sampling, Schedule, Segment
+from .sim import Simulation, SolverConfig, build_state_layout
+from .structure import (
+    Arrhenius,
+    BoundaryCondition,
+    Layer,
+    Material,
+    Structure,
+    Transport,
+    TrapSpec,
+)
+from .viz import (
+    filter_simulations_by_stage_temperature,
+    make_all_layers_over_phases_figure,
+    make_parity_figure,
+    plot_abs_error,
+    plot_all_layers_for_stage,
+    plot_layer_stage_sweep,
+    plot_peak_time_vs_stage_temperature,
+    plot_rel_error,
+    plot_sweep_heatmap,
+    plot_trace_overlay,
+    stage_temperature_C,
+)
+
+__all__ = [
+    "Arrhenius",
+    "BoundaryCondition",
+    "CacheStore",
+    "CompiledSegment",
+    "DEFAULT_ALOX",
+    "DEFAULT_CSI",
+    "DEFAULT_POLY",
+    "DEFAULT_SIOX",
+    "DEFAULT_STRUCTURE",
+    "DEFAULT_SAMPLING",
+    "DEFAULT_SOLVER",
+    "DEFAULT_Y0",
+    "Layer",
+    "Material",
+    "make_annealing_sweep",
+    "make_firing_sweep",
+    "make_unfired_sweep",
+    "build_temp_schedule_spec",
+    "Campaign",
+    "RunResult",
+    "Sampling",
+    "Schedule",
+    "Segment",
+    "SegmentBoundary",
+    "Simulation",
+    "SolverConfig",
+    "Structure",
+    "Transport",
+    "TrapSpec",
+    "build_state_layout",
+    "filter_simulations_by_stage_temperature",
+    "make_all_layers_over_phases_figure",
+    "make_parity_figure",
+    "parse_temp_schedule_spec",
+    "plot_abs_error",
+    "plot_all_layers_for_stage",
+    "plot_layer_stage_sweep",
+    "plot_peak_time_vs_stage_temperature",
+    "plot_rel_error",
+    "plot_sweep_heatmap",
+    "plot_trace_overlay",
+    "stage_temperature_C",
+]
