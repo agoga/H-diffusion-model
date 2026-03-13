@@ -8,7 +8,7 @@ and stage-sliced plotting.
 
 ```bash
 conda activate diff
-python -m pytest tests/ -q          # 71 unit + parity tests
+python -m pytest tests/ -q
 ```
 
 Run one schedule directly:
@@ -26,14 +26,14 @@ schedule = Schedule(
   ],
 )
 sim = Simulation(
-  structure=DEFAULT_STRUCTURE,
+    structure=DEFAULT_STRUCTURE,
     schedule=schedule,
-  sampling=DEFAULT_SAMPLING,
-  solver=DEFAULT_SOLVER,
+    sampling=DEFAULT_SAMPLING,
+    solver=DEFAULT_SOLVER,
 )
 result = sim.run(cache=CacheStore("sim_data"))
 
-t, y = sim.series("A", "total", stage="annealing")  # cm^-3
+t_s, y = sim.layer_total("SiO$_x$", stage="annealing")  # cm^-3
 ```
 
 Adjust a default without rebuilding the whole structure:
@@ -57,13 +57,9 @@ hdiff/                 — simulation package (new clean-slate code)
   sim.py               — Simulation + SolverConfig; PETSc/TS integration
   result.py            — RunResult; SegmentBoundary; slice helpers
   cache.py             — CacheStore: NPZ on-disk cache keyed by spec SHA-256
-  campaign.py          — schedule builders, batch runners, legacy-shaped helpers
+  campaign.py          — Campaign API + sweep builders for orchestrated runs
 
-legacy/                — frozen reference copy of the original fourstates.py code
-  fourstates.py        — original PETSc solver (do not import from new code)
-  helpers.py           — legacy parameter defaults
-  simulation_manager.py
-  sweeps.py / vizkit.py / nrel_exp.py
+legacy/                — archived reference scripts/notebooks (not active API)
 
 tests/
   specs/               — pytest unit + parity test files
@@ -166,46 +162,44 @@ custom_structure = DEFAULT_STRUCTURE.with_material(
 )
 ```
 
-`hdiff.campaign` still contains legacy-shaped helpers for sweep scripts and parity code,
-but the main path is typed structures plus immutable overrides.
+Use `hdiff.campaign.Campaign` as the primary orchestration path for sweeps.
 
 ## Layer stack
 
 | Label | Material | Thickness |
 |-------|----------|-----------|
-| A     | SiNx (bulk nitride)      | 100 nm   |
-| B     | SiNx (interface nitride) | 290 nm   |
-| C     | SiOx                     | 1.5 nm   |
-| D     | Si (emitter)             | 608.5 nm |
-| E     | Si (base)                | 50 µm    |
+| A     | AlO_x       | 100 nm   |
+| B     | poly-Si     | 290 nm   |
+| C     | SiO_x       | 1.5 nm   |
+| D     | c-Si (near) | 608.5 nm |
+| E     | c-Si (bulk) | 50 µm    |
 
 ## Sweep workflows
 
-Generate schedule lists with `make_annealing_sweep` / `make_firing_sweep`, then
-run them with direct `Simulation` construction or `run_many`:
+Use `Campaign` sweep helpers directly (`sweep_annealing`, `sweep_firing`, `sweep_unfired`):
 
 ```python
-from hdiff.campaign import make_annealing_sweep, parse_temp_schedule_spec, run_many
-from hdiff.defaults import DEFAULT_SAMPLING, DEFAULT_SOLVER, DEFAULT_STRUCTURE
+from hdiff.campaign import Campaign
+from hdiff.defaults import DEFAULT_STRUCTURE
 
-schedules, stage_names = make_annealing_sweep(
-    anneal_temps=[200, 225, 250, 300, 350],
-    fire_temp=750, fire_s=600,
-    anneal_s=8_000_000,
-    include_room=False, room_temp=25, room_s=0,
+campaign = Campaign(
+  structure=DEFAULT_STRUCTURE,
+  results_dir="sim_data",
+  auto_run=False,
 )
 
-  schedule_map = {
-    f"anneal_{temp}": parse_temp_schedule_spec(spec, stage_names)
-    for temp, spec in zip([200, 225, 250, 300, 350], schedules, strict=True)
-  }
+campaign.sweep_annealing(
+  anneal_temps=[200, 225, 250, 300, 350],
+  fire_temp=750,
+  fire_s=600,
+  anneal_s=8_000_000,
+  include_room=False,
+  run=True,
+)
 
-  runs = run_many(
-    DEFAULT_STRUCTURE,
-    schedule_map,
-    DEFAULT_SAMPLING,
-    DEFAULT_SOLVER,
-  )
+matched = campaign.by_stage_temperature(stage="firing", target_temp_C=750.0)
+sim = matched[0]
+t_s, y_total = sim.layer_total("SiO$_x$", stage="annealing")
 ```
 
 ## Plotting framework
@@ -224,10 +218,10 @@ from hdiff.viz import plot_layer_stage_sweep
 fig, ax = plt.subplots(figsize=(7.2, 4.8))
 plot_layer_stage_sweep(
   ax,
-  simulations=mgr.simulations,
+  simulations=campaign.simulations,
   match_stage="firing",      # fix this stage temperature
   target_temp_C=750.0,
-  layer="C",
+  layer="SiO$_x$",
   kind="trapped",
   plot_stage="annealing",    # plot this stage
   x_units="hours",
@@ -239,7 +233,7 @@ plot_layer_stage_sweep(
 ```python
 from hdiff.viz import make_all_layers_over_phases_figure
 
-sim = mgr.simulations[0]
+sim = campaign.simulations[0]
 fig, axes = make_all_layers_over_phases_figure(
   sim,
   stages=["firing", "annealing"],
@@ -248,7 +242,7 @@ fig, axes = make_all_layers_over_phases_figure(
 )
 ```
 
-### Other common plots carried over from legacy workflows
+### Other common plots
 
 - parity overlays and error panels: `make_parity_figure(results)`
 - peak-time vs stage-temperature scatter: `plot_peak_time_vs_stage_temperature(...)`
@@ -274,7 +268,7 @@ plot_layer_stage_sweep(
   simulations=simulations,
   match_stage="firing",
   target_temp_C=750.0,
-  layer="C",
+  layer="SiO$_x$",
   kind="trapped",
   plot_stage="annealing",
   x_units="hours",
