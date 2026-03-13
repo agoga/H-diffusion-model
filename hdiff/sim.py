@@ -52,10 +52,9 @@ Each phase is a single ``ts.solve()`` call (two per segment total).
 
 Caching (``Simulation.run``)
 ------------------------------
-``Simulation.run(cache=CacheStore(...))`` will load a matching record from disk
-if one exists (keyed on SHA-256 of ``spec_json``), or run the ODE and write on
-success.  The ``completed`` flag in the NPZ is set to 1 only after the full
-integration finishes.
+Each simulation owns one ``RunResult`` that can persist itself to disk.  If the
+result is incomplete, ``run()`` first attempts ``result.try_load()`` from
+``cache_dir``.  On a miss, the ODE is integrated and the result writes itself.
 """
 
 from __future__ import annotations
@@ -65,14 +64,14 @@ import json
 import sys
 import time
 from dataclasses import asdict, dataclass, is_dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from .cache import CacheStore
 from .result import RunResult
 from .result import SegmentBoundary
-from .schedule import Schedule, Sampling, compiled_segment_to_dict
+from .schedule import Schedule, compiled_segment_to_dict
 from .structure import Structure
 
 
@@ -102,6 +101,23 @@ class SolverConfig:
             raise ValueError("solver tolerances must be > 0")
         if self.max_steps is not None and self.max_steps <= 0:
             raise ValueError("solver max_steps must be > 0 when provided")
+
+
+@dataclass(frozen=True)
+class Sampling:
+    """Controls output density from the ODE integrator."""
+
+    base_out_dt_s: float
+    bootstrap_duration_s: float
+    bootstrap_max_dt_s: float
+
+    def validate(self) -> None:
+        if self.base_out_dt_s <= 0.0:
+            raise ValueError("base_out_dt_s must be > 0")
+        if self.bootstrap_duration_s < 0.0:
+            raise ValueError("bootstrap_duration_s must be >= 0")
+        if self.bootstrap_max_dt_s <= 0.0:
+            raise ValueError("bootstrap_max_dt_s must be > 0")
 
 
 def _to_canonical_data(value: Any) -> Any:
@@ -173,6 +189,7 @@ class Simulation:
     sampling: Sampling
     solver: SolverConfig
     y0: list[float] | None = None
+    cache_dir: str | Path | None = None
     schema_version: int = 1
     result: RunResult | None = None
 
@@ -184,9 +201,20 @@ class Simulation:
         self.geom = self.structure.build_fv_geometry()
         self.layout = build_state_layout(self.structure)
         self.compiled = self.schedule.compile()
-        self._last_cache_hit = False
         if self.y0 is not None and len(self.y0) != self.layout["n_state"]:
             raise ValueError("y0 length does not match n_state")
+        if self.result is None:
+            self.result = RunResult(
+                cache_key=self.cache_key(),
+                schema_version=self.schema_version,
+                spec_json=self.spec_json(),
+                order_json=json.dumps(
+                    self.layout["order_jsonable"],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                cache_dir=None if self.cache_dir is None else str(self.cache_dir),
+            )
 
     def build_spec_dict(self) -> dict[str, Any]:
         solver_options = self.solver.petsc_options or {}
@@ -457,9 +485,6 @@ class Simulation:
             boundaries.append(
                 SegmentBoundary(
                     i_seg=segment.i_seg,
-                    stage=segment.stage,
-                    t_start_s=segment.t_start_s,
-                    t_end_s=segment.t_end_s,
                     i_start=i_start,
                     i_end=i_end,
                 )
@@ -467,62 +492,45 @@ class Simulation:
 
         y_matrix = np.vstack(states)
         return RunResult(
-            t_s=np.asarray(times, dtype=float),
-            y=np.asarray(y_matrix, dtype=float),
-            boundaries=boundaries,
             cache_key=self.cache_key(),
             schema_version=self.schema_version,
             spec_json=self.spec_json(),
+            order_json=json.dumps(
+                self.layout["order_jsonable"],
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            cache_dir=None if self.cache_dir is None else str(self.cache_dir),
+            t_s=np.asarray(times, dtype=float),
+            y=np.asarray(y_matrix, dtype=float),
+            boundaries=boundaries,
         )
 
-    def run(self, cache: CacheStore | None = None) -> RunResult:
-        """Run the simulation, using ``cache`` to load/store results.
+    def run(self) -> RunResult:
+        """Run the simulation.
 
-        If ``cache`` is provided:
-        - A hit returns instantly with the stored ``RunResult``.
-        - A miss integrates the ODE then writes to cache with ``completed=1``.
-        - ``self._last_cache_hit`` is set accordingly.
-
-        The result is also stored in ``self.result`` for convenience.
+        The simulation-owned ``RunResult`` is returned.  If that result is not
+        complete, ``run()`` first attempts to load from cache and only
+        integrates when no valid cache file is available.
         """
-        key = self.cache_key()
-        spec_json = self.spec_json()
-        order_json = json.dumps(
-            self.layout["order_jsonable"],
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+        if self.result is None:
+            raise RuntimeError("simulation result container was not initialized")
 
-        if cache is not None and cache.has(key):
-            try:
-                loaded_result, loaded_order_json, _ = cache.load(
-                    key,
-                    requested_spec_json=spec_json,
-                )
-                if loaded_order_json != order_json:
-                    raise ValueError("cache order_json mismatch")
-                self.result = loaded_result
-                self._last_cache_hit = True
-                return loaded_result
-            except Exception:
-                pass
+        if self.result.completed:
+            return self.result
+
+        if self.result.try_load():
+            return self.result
 
         y0 = np.zeros(self.layout["n_state"], dtype=float) if self.y0 is None else np.asarray(self.y0, dtype=float)
-        result = self._integrate_piecewise(y0=y0)
-        self.result = result
-        self._last_cache_hit = False
-
-        if cache is not None:
-            cache.save(
-                key=key,
-                result=result,
-                order_json=order_json,
-                timestep=float(self.sampling.base_out_dt_s),
-                reason="completed",
-                completed=1,
-            )
-
-        return result
+        integrated = self._integrate_piecewise(y0=y0)
+        self.result.set_data(
+            t_s=np.asarray(integrated.t_s),
+            y=np.asarray(integrated.y),
+            boundaries=list(integrated.boundaries),
+        )
+        self.result.save(timestep=float(self.sampling.base_out_dt_s))
+        return self.result
 
     def snapshot_end(self, i_seg: int | None = None) -> list[float]:
         if self.result is None:
@@ -541,25 +549,18 @@ class Simulation:
     def stage_occurrences(self, stage: str) -> int:
         if self.result is None:
             raise ValueError("simulation has not been run")
-        return sum(1 for boundary in self.result.boundaries if boundary.stage == stage)
+        return self.result.stage_occurrences(self.compiled, stage)
 
     def stage_indices(self, stage: str, occurrence: int = 0) -> tuple[int, int]:
         if self.result is None:
             raise ValueError("simulation has not been run")
-        boundaries = [boundary for boundary in self.result.boundaries if boundary.stage == stage]
-        if occurrence < 0 or occurrence >= len(boundaries):
-            raise ValueError(f"stage occurrence out of range for stage={stage}: {occurrence}")
-        boundary = boundaries[occurrence]
+        boundary = self.result.boundary_for_stage(self.compiled, stage=stage, occurrence=occurrence)
         return boundary.i_start, boundary.i_end
 
     def stage_bounds(self, stage: str, occurrence: int = 0) -> tuple[float, float]:
         if self.result is None:
             raise ValueError("simulation has not been run")
-        boundaries = [boundary for boundary in self.result.boundaries if boundary.stage == stage]
-        if occurrence < 0 or occurrence >= len(boundaries):
-            raise ValueError(f"stage occurrence out of range for stage={stage}: {occurrence}")
-        boundary = boundaries[occurrence]
-        return boundary.t_start_s, boundary.t_end_s
+        return self.result.stage_bounds(self.compiled, stage=stage, occurrence=occurrence)
 
     def _slice_indices(
         self,

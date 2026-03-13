@@ -10,14 +10,15 @@ import pytest
 
 from hdiff.campaign import (
     Campaign,
+)
+from hdiff.defaults import DEFAULT_STRUCTURE
+from hdiff.schedule import (
     make_annealing_sweep,
     make_firing_sweep,
     make_unfired_sweep,
     parse_temp_schedule_spec,
 )
-from hdiff.defaults import DEFAULT_STRUCTURE
-from hdiff.schedule import Sampling
-from hdiff.sim import SolverConfig
+from hdiff.sim import Sampling, SolverConfig
 
 
 _LEGACY_PARAM_BASE = {

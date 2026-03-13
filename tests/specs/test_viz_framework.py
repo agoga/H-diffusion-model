@@ -11,12 +11,10 @@ import matplotlib.pyplot as plt
 
 from hdiff.campaign import (
     Campaign,
-    default_sampling,
-    default_solver,
     filter_simulations_by_stage_temperature as campaign_filter_simulations_by_stage_temperature,
-    parse_temp_schedule_spec,
 )
-from hdiff.defaults import DEFAULT_STRUCTURE
+from hdiff.defaults import DEFAULT_SAMPLING, DEFAULT_SOLVER, DEFAULT_STRUCTURE
+from hdiff.schedule import parse_temp_schedule_spec
 from hdiff.sim import Simulation
 from hdiff.viz import (
     build_campaign_stage_sweep_traces,
@@ -37,8 +35,8 @@ def _demo_sim(spec: str) -> Simulation:
     return Simulation(
         structure=DEFAULT_STRUCTURE,
         schedule=parse_temp_schedule_spec(spec, stage_names=["firing", "annealing"]),
-        sampling=default_sampling(),
-        solver=default_solver(),
+        sampling=DEFAULT_SAMPLING,
+        solver=DEFAULT_SOLVER,
     )
 
 

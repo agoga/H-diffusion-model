@@ -41,8 +41,9 @@ from typing import Any
 import numpy as np
 
 from .campaign import (
-    filter_simulations_by_stage_temperature as _campaign_filter_simulations,
-    stage_temperature_C as _campaign_stage_temperature_C,
+    filter_simulations_by_stage_temperature,
+    other_stage_name,
+    stage_temperature_C,
 )
 from .sim import Simulation
 
@@ -100,6 +101,159 @@ def build_simulation_trace(
         alpha=alpha,
     )
 
+def build_campaign_stage_sweep_traces(
+    campaign: Any,
+    *,
+    match_stage: str,
+    target_temp_C: float,
+    layer: str = "C",
+    kind: str = "total",
+    plot_stage: str = "annealing",
+    match_occurrence: int = 0,
+    plot_occurrence: int = 0,
+    units: str = "cm^-3",
+    tolerance_C: float = 1e-6,
+    x_units: str = "seconds",
+) -> tuple[list[TraceData], str | None]:
+    """Build overlay traces for campaign runs selected by one stage temperature.
+
+    Returns ``(traces, other_stage_name)`` where ``other_stage_name`` is used as
+    legend title when available.
+    """
+
+    import matplotlib.pyplot as plt
+
+    matched = filter_simulations_by_stage_temperature(
+        campaign,
+        stage=match_stage,
+        target_temp_C=target_temp_C,
+        tolerance_C=tolerance_C,
+        occurrence=match_occurrence,
+    )
+    if not matched:
+        raise ValueError(
+            f"no simulations found with {match_stage} approximately {target_temp_C}C"
+        )
+
+    other_stage = other_stage_name(matched[0], match_stage)
+
+    # Sort matched sims by the other-stage temperature so legend order is
+    # always low→high without any post-hoc sorting of legend handles.
+    if other_stage is not None:
+        def _sort_key(s):
+            try:
+                return stage_temperature_C(s, other_stage, 0)
+            except Exception:
+                return float("inf")
+        matched = sorted(matched, key=_sort_key)
+
+    color_key_vals: list[float] = []
+    if other_stage is not None:
+        for sim in matched:
+            try:
+                color_key_vals.append(stage_temperature_C(sim, other_stage, 0))
+            except Exception:
+                pass
+
+    cmap = plt.get_cmap("coolwarm")
+    if color_key_vals:
+        vmin = float(np.min(color_key_vals))
+        vmax = float(np.max(color_key_vals))
+        span = max(vmax - vmin, 1e-12)
+    else:
+        vmin = vmax = 0.0
+        span = 1.0
+
+    traces: list[TraceData] = []
+    for i, sim in enumerate(matched):
+        color = cmap(0.5)
+        label = f"run_{i}"
+        if other_stage is not None:
+            try:
+                other_temp = stage_temperature_C(sim, other_stage, 0)
+                frac = (other_temp - vmin) / span
+                color = cmap(float(np.clip(frac, 0.0, 1.0)))
+                label = f"{other_temp:.0f}C"
+            except Exception:
+                pass
+        traces.append(
+            build_simulation_trace(
+                sim,
+                layer=layer,
+                kind=kind,
+                stage=plot_stage,
+                occurrence=plot_occurrence,
+                units=units,
+                x_units=x_units,
+                label=label,
+                color=color,
+            )
+        )
+
+    return traces, other_stage
+
+
+def build_areal_density_traces(
+    sim: Simulation,
+    *,
+    stage: str | None = None,
+    occurrence: int = 0,
+    kind: str = "total",
+    x_units: str = "seconds",
+    delta_layers: list[str] | None = None,
+    _delta_baseline: dict[str, float] | None = None,
+) -> list[TraceData]:
+    """Build areal-density traces (cm^-2) for all layers.
+
+    Areal density = volumetric concentration (cm^-3) × layer thickness (cm).
+    Layers listed in ``delta_layers`` are shown as the signed change from their
+    global t=0 value (passed via ``_delta_baseline``).  Defaults to only the
+    first layer as delta.
+
+    Args:
+        sim: Completed simulation.
+        stage: Stage name to slice (``None`` = full timeline).
+        occurrence: Which occurrence of ``stage`` to use.
+        kind: ``'total'``, ``'mobile'``, or ``'trapped'``.
+        x_units: ``'seconds'`` or ``'hours'``.
+        delta_layers: Layer names to subtract global-t=0 value from.  ``None``
+            uses ``[sim.structure.layers[0].name]``.
+        _delta_baseline: Pre-computed global-t=0 areal densities keyed by
+            layer name (cm^-2).  Computed internally if ``None``.
+
+    Returns:
+        List of :class:`TraceData` ready for :func:`plot_traces`.
+    """
+    if delta_layers is None:
+        delta_layers = [sim.structure.layers[0].name]
+
+    # Compute global-t=0 baseline for delta layers if not provided.
+    if _delta_baseline is None:
+        _delta_baseline = {}
+        for layer in sim.structure.layers:
+            if layer.name in delta_layers:
+                _, y0 = sim.series(layer=layer.name, kind=kind, stage=None, units="cm^-3")
+                arr0 = _to_array(y0)
+                _delta_baseline[layer.name] = (arr0[0] * layer.thickness_cm) if arr0.size > 0 else 0.0
+
+    x_scale = 3600.0 if x_units == "hours" else 1.0
+    traces: list[TraceData] = []
+
+    for layer in sim.structure.layers:
+        t_s, y_conc = sim.series(
+            layer=layer.name, kind=kind, stage=stage, occurrence=occurrence, units="cm^-3"
+        )
+        t = _to_array(t_s) / x_scale
+        areal = _to_array(y_conc) * layer.thickness_cm  # cm^-3 * cm = cm^-2
+        if layer.name in delta_layers:
+            ref = _delta_baseline.get(layer.name, 0.0)
+            areal = (areal - ref) if areal.size > 0 else areal
+            label = f"\u0394{layer.name}"
+        else:
+            label = layer.name
+        traces.append(TraceData(t_s=t, y=areal, label=label))
+
+    return traces
 
 def plot_traces(
     ax,
@@ -148,203 +302,6 @@ def plot_traces(
     if legend:
         ax.legend()
 
-
-def _to_array(x: Sequence[float] | np.ndarray) -> np.ndarray:
-    arr = np.asarray(x, dtype=float)
-    if arr.ndim != 1:
-        raise ValueError("expected 1-D array")
-    return arr
-
-
-def _interp(t_src: np.ndarray, y_src: np.ndarray, t_dst: np.ndarray) -> np.ndarray:
-    if t_src.size == 0 or y_src.size == 0:
-        raise ValueError("source trace must be non-empty")
-    if t_src.shape != y_src.shape:
-        raise ValueError("source time and values must have matching shape")
-    if t_dst.size == 0:
-        raise ValueError("destination time axis must be non-empty")
-    return np.interp(t_dst, t_src, y_src)
-
-
-def _log_probe_grid(ref_t_s: np.ndarray, n_points: int = 2048) -> np.ndarray:
-    ref_t = _to_array(ref_t_s)
-    if n_points < 3:
-        raise ValueError("n_points must be >= 3")
-    t_max = float(np.max(ref_t))
-    if t_max <= 0.0:
-        return np.linspace(0.0, 0.0, n_points)
-    positive = ref_t[ref_t > 0.0]
-    t_min = float(np.min(positive)) if positive.size else t_max / 1e6
-    t_min = max(t_min, t_max / 1e12, 1e-12)
-    geom = np.geomspace(t_min, t_max, n_points - 1)
-    return np.unique(np.concatenate(([0.0], geom)))
-
-
-def _stage_segment(sim: Simulation, stage: str, occurrence: int = 0):
-    compiled = sim.schedule.compile()
-    segs = [seg for seg in compiled if seg.stage == stage]
-    if occurrence < 0 or occurrence >= len(segs):
-        raise ValueError(f"stage occurrence out of range for stage={stage}: {occurrence}")
-    return segs[occurrence]
-
-
-def stage_temperature_C(sim: Simulation, stage: str, occurrence: int = 0) -> float:
-    """Return the stage temperature in Celsius for one simulation and stage."""
-
-    return _campaign_stage_temperature_C(sim, stage, occurrence)
-
-
-def filter_simulations_by_stage_temperature(
-    campaign: Any,
-    *,
-    stage: str,
-    target_temp_C: float,
-    tolerance_C: float = 1e-6,
-    occurrence: int = 0,
-) -> list[Simulation]:
-    """Select simulations matching stage temperature from a campaign object."""
-
-    return _campaign_filter_simulations(
-        campaign,
-        stage=stage,
-        target_temp_C=target_temp_C,
-        tolerance_C=tolerance_C,
-        occurrence=occurrence,
-    )
-
-
-def _other_stage_name(sim: Simulation, stage: str) -> str | None:
-    names: list[str] = []
-    for seg in sim.schedule.compile():
-        if seg.stage not in names:
-            names.append(seg.stage)
-    for name in names:
-        if name != stage:
-            return name
-    return None
-
-
-def _style_axes(ax, *, logx: bool, logy: bool, title: str | None, xlabel: str, ylabel: str) -> None:
-    if logx:
-        ax.set_xscale("log")
-    if logy:
-        ax.set_yscale("log")
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    if title:
-        ax.set_title(title)
-    ax.grid(True, which="both", alpha=0.3)
-
-
-def _apply_time_xlim(
-    ax,
-    *,
-    x_units: str,
-    xlim: tuple[float, float] | None,
-    min_x_hours: float | None,
-) -> None:
-    """Apply caller x-limits, with optional default hour-scale lower bound.
-
-    Priority:
-    1) explicit xlim from caller
-    2) if viewing in hours, clamp left x-limit to min_x_hours (default 1e-3)
-    """
-    if xlim is not None:
-        ax.set_xlim(xlim)
-        return
-
-    if x_units != "hours" or min_x_hours is None:
-        return
-
-    left, right = ax.get_xlim()
-    min_left = float(min_x_hours)
-    if right <= min_left:
-        right = min_left * 10.0
-    if left < min_left:
-        ax.set_xlim(min_left, right)
-
-
-def build_campaign_stage_sweep_traces(
-    campaign: Any,
-    *,
-    match_stage: str,
-    target_temp_C: float,
-    layer: str = "C",
-    kind: str = "total",
-    plot_stage: str = "annealing",
-    match_occurrence: int = 0,
-    plot_occurrence: int = 0,
-    units: str = "cm^-3",
-    tolerance_C: float = 1e-6,
-    x_units: str = "seconds",
-) -> tuple[list[TraceData], str | None]:
-    """Build overlay traces for campaign runs selected by one stage temperature.
-
-    Returns ``(traces, other_stage_name)`` where ``other_stage_name`` is used as
-    legend title when available.
-    """
-
-    import matplotlib.pyplot as plt
-
-    matched = filter_simulations_by_stage_temperature(
-        campaign,
-        stage=match_stage,
-        target_temp_C=target_temp_C,
-        tolerance_C=tolerance_C,
-        occurrence=match_occurrence,
-    )
-    if not matched:
-        raise ValueError(
-            f"no simulations found with {match_stage} approximately {target_temp_C}C"
-        )
-
-    other_stage = _other_stage_name(matched[0], match_stage)
-    color_key_vals: list[float] = []
-    if other_stage is not None:
-        for sim in matched:
-            try:
-                color_key_vals.append(stage_temperature_C(sim, other_stage, 0))
-            except Exception:
-                pass
-
-    cmap = plt.get_cmap("viridis")
-    if color_key_vals:
-        vmin = float(np.min(color_key_vals))
-        vmax = float(np.max(color_key_vals))
-        span = max(vmax - vmin, 1e-12)
-    else:
-        vmin = vmax = 0.0
-        span = 1.0
-
-    traces: list[TraceData] = []
-    for i, sim in enumerate(matched):
-        color = cmap(0.5)
-        label = f"run_{i}"
-        if other_stage is not None:
-            try:
-                other_temp = stage_temperature_C(sim, other_stage, 0)
-                frac = (other_temp - vmin) / span
-                color = cmap(float(np.clip(frac, 0.0, 1.0)))
-                label = f"{other_stage}={other_temp:.0f}C"
-            except Exception:
-                pass
-        traces.append(
-            build_simulation_trace(
-                sim,
-                layer=layer,
-                kind=kind,
-                stage=plot_stage,
-                occurrence=plot_occurrence,
-                units=units,
-                x_units=x_units,
-                label=label,
-                color=color,
-            )
-        )
-
-    return traces, other_stage
-
-
 def plot_trace_overlay(
     ax,
     *,
@@ -392,6 +349,78 @@ def plot_trace_overlay(
         xlim=None,
         min_x_hours=None,
     )
+
+
+def _to_array(x: Sequence[float] | np.ndarray) -> np.ndarray:
+    arr = np.asarray(x, dtype=float)
+    if arr.ndim != 1:
+        raise ValueError("expected 1-D array")
+    return arr
+
+
+def _interp(t_src: np.ndarray, y_src: np.ndarray, t_dst: np.ndarray) -> np.ndarray:
+    if t_src.size == 0 or y_src.size == 0:
+        raise ValueError("source trace must be non-empty")
+    if t_src.shape != y_src.shape:
+        raise ValueError("source time and values must have matching shape")
+    if t_dst.size == 0:
+        raise ValueError("destination time axis must be non-empty")
+    return np.interp(t_dst, t_src, y_src)
+
+
+def _log_probe_grid(ref_t_s: np.ndarray, n_points: int = 2048) -> np.ndarray:
+    ref_t = _to_array(ref_t_s)
+    if n_points < 3:
+        raise ValueError("n_points must be >= 3")
+    t_max = float(np.max(ref_t))
+    if t_max <= 0.0:
+        return np.linspace(0.0, 0.0, n_points)
+    positive = ref_t[ref_t > 0.0]
+    t_min = float(np.min(positive)) if positive.size else t_max / 1e6
+    t_min = max(t_min, t_max / 1e12, 1e-12)
+    geom = np.geomspace(t_min, t_max, n_points - 1)
+    return np.unique(np.concatenate(([0.0], geom)))
+
+
+def _style_axes(ax, *, logx: bool, logy: bool, title: str | None, xlabel: str, ylabel: str) -> None:
+    if logx:
+        ax.set_xscale("log")
+    if logy:
+        ax.set_yscale("log")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    if title:
+        ax.set_title(title)
+    ax.grid(True, which="both", alpha=0.3)
+
+
+def _apply_time_xlim(
+    ax,
+    *,
+    x_units: str,
+    xlim: tuple[float, float] | None,
+    min_x_hours: float | None,
+) -> None:
+    """Apply caller x-limits, with optional default hour-scale lower bound.
+
+    Priority:
+    1) explicit xlim from caller
+    2) if viewing in hours, clamp left x-limit to min_x_hours (default 1e-3)
+    """
+    if xlim is not None:
+        ax.set_xlim(xlim)
+        return
+
+    if x_units != "hours" or min_x_hours is None:
+        return
+
+    left, right = ax.get_xlim()
+    min_left = float(min_x_hours)
+    if right <= min_left:
+        right = min_left * 10.0
+    if left < min_left:
+        ax.set_xlim(min_left, right)
+
 
 
 def plot_abs_error(
@@ -690,6 +719,117 @@ def make_all_layers_over_phases_figure(
     return fig, axes
 
 
+def make_areal_density_figure(
+    sim: Simulation,
+    *,
+    stages: Sequence[str] | None = None,
+    kind: str = "total",
+    x_units: str = "hours",
+    auto_x_units_threshold_h: float = 1.0,
+    logx: bool = True,
+    logy: bool = True,
+    delta_layers: list[str] | None = None,
+    xlim: tuple[float, float] | None = None,
+    min_x_hours: float | None = 1e-3,
+):
+    """Build one subplot per schedule phase showing areal density (cm^-2).
+
+    Each layer's areal density (concentration × thickness) is plotted as one
+    trace per stage.  Layers in ``delta_layers`` are shown as the signed
+    change from their global t=0 value, highlighting net gain/loss.
+
+    The x-axis unit is chosen per stage: stages shorter than
+    ``auto_x_units_threshold_h`` hours are plotted in seconds; longer stages
+    use ``x_units`` (default ``'hours'``).
+
+    Note: turn off ``logy`` when delta layers produce negative values.
+
+    Args:
+        sim: Completed simulation.
+        stages: Stage names to plot, in order.  ``None`` → all stages in
+            schedule order.
+        kind: ``'total'``, ``'mobile'``, or ``'trapped'``.
+        x_units: Preferred x-axis unit for long stages (``'seconds'`` or
+            ``'hours'``).
+        auto_x_units_threshold_h: Stages shorter than this (in hours) are
+            forced to seconds regardless of ``x_units``.
+        logx: Log x-axis.
+        logy: Log y-axis.
+        delta_layers: Layer names to show as Δ from global t=0.  ``None`` →
+            first layer only.
+        xlim: Optional explicit x-axis limits (applied to all subplots).
+        min_x_hours: Minimum left x-bound when viewing in hours.
+
+    Returns:
+        ``(fig, axes)``
+    """
+    import matplotlib.pyplot as plt
+
+    if stages is None:
+        ordered: list[str] = []
+        for seg in sim.schedule.compile():
+            if seg.stage not in ordered:
+                ordered.append(seg.stage)
+        stages = ordered
+
+    if not stages:
+        raise ValueError("no stages found in simulation schedule")
+
+    if delta_layers is None:
+        delta_layers = [sim.structure.layers[0].name]
+
+    # Pre-compute global-t=0 baseline once for all delta layers.
+    delta_baseline: dict[str, float] = {}
+    for layer in sim.structure.layers:
+        if layer.name in delta_layers:
+            _, y0 = sim.series(layer=layer.name, kind=kind, stage=None, units="cm^-3")
+            arr0 = _to_array(y0)
+            delta_baseline[layer.name] = (arr0[0] * layer.thickness_cm) if arr0.size > 0 else 0.0
+
+    threshold_s = auto_x_units_threshold_h * 3600.0
+
+    fig, axes = plt.subplots(
+        1, len(stages), figsize=(6.5 * len(stages), 5.0), constrained_layout=True
+    )
+    if len(stages) == 1:
+        axes = np.asarray([axes])
+
+    for i, stage in enumerate(stages):
+        t_start, t_end = sim.stage_bounds(stage)
+        duration_s = t_end - t_start
+        stage_x_units = x_units if duration_s >= threshold_s else "seconds"
+
+        traces = build_areal_density_traces(
+            sim,
+            stage=stage,
+            kind=kind,
+            x_units=stage_x_units,
+            delta_layers=delta_layers,
+            _delta_baseline=delta_baseline,
+        )
+
+        x_label = "Time (hours)" if stage_x_units == "hours" else "Time (s)"
+        ax = axes[i]
+        plot_traces(
+            ax,
+            traces=traces,
+            logx=logx,
+            logy=logy,
+            title=f"{stage} — areal density ({kind})",
+            xlabel=x_label,
+            ylabel="Areal density (cm\u207b\u00b2)",
+            legend=(i == 0),
+            x_units=stage_x_units,
+            xlim=xlim,
+            min_x_hours=min_x_hours,
+        )
+        leg = ax.get_legend()
+        if leg is not None:
+            leg.set_title("Layer")
+
+    return fig, axes
+
+
 def plot_peak_time_vs_stage_temperature(
     ax,
     *,
@@ -811,9 +951,10 @@ def plot_sweep_heatmap(
 
 __all__ = [
     "TraceData",
+    "build_areal_density_traces",
     "build_campaign_stage_sweep_traces",
     "build_simulation_trace",
-    "filter_simulations_by_stage_temperature",
+    "make_areal_density_figure",
     "make_all_layers_over_phases_figure",
     "make_parity_figure",
     "plot_traces",
@@ -824,5 +965,4 @@ __all__ = [
     "plot_rel_error",
     "plot_sweep_heatmap",
     "plot_trace_overlay",
-    "stage_temperature_C",
 ]

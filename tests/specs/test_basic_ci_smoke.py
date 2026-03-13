@@ -9,9 +9,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from hdiff.result import RunResult, SegmentBoundary, slice_result_for_stage
-from hdiff.schedule import Sampling, Schedule, Segment
-from hdiff.sim import Simulation, SolverConfig
+from hdiff.result import RunResult, SegmentBoundary
+from hdiff.schedule import Schedule, Segment
+from hdiff.sim import Sampling, Simulation, SolverConfig
 from tests.test_helpers import make_min_structure
 
 
@@ -77,21 +77,19 @@ def test_single_stage_500c_10s_series_alignment_from_result() -> None:
     y[:, idx_trapped_a] = np.array([0.1, 0.1, 0.2])
 
     result = RunResult(
+        cache_key="synthetic",
+        schema_version=sim.schema_version,
+        spec_json=sim.spec_json(),
+        order_json="[]",
         t_s=np.array([0.0, 5.0, 10.0], dtype=float),
         y=y,
         boundaries=[
             SegmentBoundary(
                 i_seg=0,
-                stage="firing",
-                t_start_s=0.0,
-                t_end_s=10.0,
                 i_start=0,
                 i_end=3,
             )
         ],
-        cache_key="synthetic",
-        schema_version=sim.schema_version,
-        spec_json=sim.spec_json(),
     )
     sim.result = result
 
@@ -122,6 +120,10 @@ def test_runresult_stage_slice_helpers_rezero_and_absolute() -> None:
     - absolute time (original global timeline retained).
     """
     result = RunResult(
+        cache_key="unit",
+        schema_version=1,
+        spec_json="{}",
+        order_json="[]",
         t_s=np.array([0.0, 2.0, 4.0, 7.0, 10.0], dtype=float),
         y=np.array(
             [
@@ -134,18 +136,20 @@ def test_runresult_stage_slice_helpers_rezero_and_absolute() -> None:
             dtype=float,
         ),
         boundaries=[
-            SegmentBoundary(i_seg=0, stage="firing", t_start_s=0.0, t_end_s=4.0, i_start=0, i_end=3),
-            SegmentBoundary(i_seg=1, stage="annealing", t_start_s=4.0, t_end_s=10.0, i_start=2, i_end=5),
+            SegmentBoundary(i_seg=0, i_start=0, i_end=3),
+            SegmentBoundary(i_seg=1, i_start=2, i_end=5),
         ],
-        cache_key="unit",
-        schema_version=1,
-        spec_json="{}",
     )
 
-    t_stage, y_stage = slice_result_for_stage(result, stage="annealing", occurrence=0, rezero_time=True)
+    compiled = [
+        Segment(duration_s=4.0, stage="firing", T_C=500.0),
+        Segment(duration_s=6.0, stage="annealing", T_C=250.0),
+    ]
+
+    t_stage, y_stage = result.slice_for_stage(compiled, stage="annealing", occurrence=0, rezero_time=True)
     assert np.array_equal(t_stage, np.array([0.0, 3.0, 6.0]))
     assert np.array_equal(y_stage[:, 0], np.array([2.0, 3.0, 4.0]))
 
-    t_abs, y_abs = slice_result_for_stage(result, stage="annealing", occurrence=0, rezero_time=False)
+    t_abs, y_abs = result.slice_for_stage(compiled, stage="annealing", occurrence=0, rezero_time=False)
     assert np.array_equal(t_abs, np.array([4.0, 7.0, 10.0]))
     assert np.array_equal(y_abs[:, 1], np.array([12.0, 13.0, 14.0]))

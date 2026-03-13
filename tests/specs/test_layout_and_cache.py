@@ -6,7 +6,6 @@ import json
 
 import numpy as np
 
-from hdiff.cache import CacheStore
 from hdiff.defaults import DEFAULT_CSI, DEFAULT_STRUCTURE
 from hdiff.result import RunResult, SegmentBoundary
 from hdiff.sim import Simulation
@@ -116,43 +115,38 @@ def test_cache_save_load_roundtrip(tmp_path) -> None:
     key = sim.cache_key()
     order_json = json.dumps(sim.layout["order_jsonable"], separators=(",", ":"), sort_keys=True)
     result = RunResult(
+        cache_key=key,
+        schema_version=sim.schema_version,
+        spec_json=sim.spec_json(),
+        order_json=order_json,
+        cache_dir=str(tmp_path),
         t_s=np.array([0.0, 1.0, 2.0]),
         y=np.zeros((3, sim.layout["n_state"])),
         boundaries=[
             SegmentBoundary(
                 i_seg=0,
-                stage="firing",
-                t_start_s=0.0,
-                t_end_s=10.0,
                 i_start=0,
                 i_end=3,
             )
         ],
+    )
+    result.save(timestep=1.0, reason="unit-test", completed=1)
+
+    loaded = RunResult(
         cache_key=key,
         schema_version=sim.schema_version,
         spec_json=sim.spec_json(),
-    )
-    cache = CacheStore(tmp_path)
-    cache.save(
-        key=key,
-        result=result,
         order_json=order_json,
-        timestep=1.0,
-        reason="unit-test",
-        completed=1,
+        cache_dir=str(tmp_path),
     )
-
-    loaded, loaded_order_json, loaded_boundaries_json = cache.load(
-        key,
-        requested_spec_json=sim.spec_json(),
-    )
+    assert loaded.try_load() is True
 
     assert np.array_equal(loaded.t_s, result.t_s)
     assert np.array_equal(loaded.y, result.y)
     assert loaded.cache_key == result.cache_key
     assert loaded.spec_json == result.spec_json
-    assert loaded_order_json == order_json
-    assert "firing" in loaded_boundaries_json
+    assert loaded.order_json == order_json
+    assert "firing" in json.dumps([{"stage": b.stage} for b in loaded.boundaries])
 
 
 def test_structure_with_material_updates_one_trap_immutably() -> None:

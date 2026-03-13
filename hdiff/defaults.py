@@ -6,8 +6,7 @@ Use `Material.with_trap(...)` for small changes.
 
 from __future__ import annotations
 
-from .schedule import Sampling
-from .sim import SolverConfig
+from .sim import Sampling, SolverConfig
 from .structure import Arrhenius, BoundaryCondition, Layer, Material, Structure, Transport, TrapSpec
 
 

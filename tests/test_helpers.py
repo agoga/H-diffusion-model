@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from hdiff.schedule import Sampling, Schedule, Segment
-from hdiff.sim import SolverConfig
+from hdiff.schedule import Schedule, Segment
+from hdiff.sim import Sampling, SolverConfig
 from hdiff.structure import (
     Arrhenius,
     BoundaryCondition,

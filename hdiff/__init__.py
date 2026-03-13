@@ -12,16 +12,23 @@ from .defaults import (
 )
 from .campaign import (
     Campaign,
+    filter_simulations_by_stage_temperature,
+    find_simulation,
+    other_stage_name,
+    stage_temperature_C,
+)
+from .result import RunResult, SegmentBoundary
+from .schedule import (
+    CompiledSegment,
+    Schedule,
+    Segment,
     build_temp_schedule_spec,
     make_annealing_sweep,
     make_firing_sweep,
     make_unfired_sweep,
     parse_temp_schedule_spec,
 )
-from .cache import CacheStore
-from .result import RunResult, SegmentBoundary
-from .schedule import CompiledSegment, Sampling, Schedule, Segment
-from .sim import Simulation, SolverConfig, build_state_layout
+from .sim import Sampling, Simulation, SolverConfig, build_state_layout
 from .structure import (
     Arrhenius,
     BoundaryCondition,
@@ -32,7 +39,6 @@ from .structure import (
     TrapSpec,
 )
 from .viz import (
-    filter_simulations_by_stage_temperature,
     make_all_layers_over_phases_figure,
     make_parity_figure,
     plot_abs_error,
@@ -42,13 +48,11 @@ from .viz import (
     plot_rel_error,
     plot_sweep_heatmap,
     plot_trace_overlay,
-    stage_temperature_C,
 )
 
 __all__ = [
     "Arrhenius",
     "BoundaryCondition",
-    "CacheStore",
     "CompiledSegment",
     "DEFAULT_ALOX",
     "DEFAULT_CSI",
@@ -60,10 +64,13 @@ __all__ = [
     "DEFAULT_Y0",
     "Layer",
     "Material",
+    "filter_simulations_by_stage_temperature",
+    "find_simulation",
     "make_annealing_sweep",
     "make_firing_sweep",
     "make_unfired_sweep",
     "build_temp_schedule_spec",
+    "other_stage_name",
     "Campaign",
     "RunResult",
     "Sampling",
@@ -80,6 +87,7 @@ __all__ = [
     "make_all_layers_over_phases_figure",
     "make_parity_figure",
     "parse_temp_schedule_spec",
+    "stage_temperature_C",
     "plot_abs_error",
     "plot_all_layers_for_stage",
     "plot_layer_stage_sweep",

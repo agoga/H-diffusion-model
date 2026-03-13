@@ -1,17 +1,15 @@
-"""Post-simulation result containers and slice helpers.
+"""Post-simulation result containers and query helpers.
 
 ``RunResult`` stores the full ODE trajectory as parallel arrays ``t_s`` and
-``y`` (shape ``[n_points, n_state]``).  ``SegmentBoundary`` records map each
-compiled schedule segment to a half-open row range ``[i_start, i_end)`` into
-those arrays.
-
-Slice helpers (``slice_result_for_stage``, ``boundary_for_stage``) provide
-convenient access without requiring callers to manage index arithmetic.
+``y`` (shape ``[n_points, n_state]``). ``SegmentBoundary`` maps compiled
+segment index to trajectory row ranges.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
@@ -27,18 +25,13 @@ class SegmentBoundary:
 
     i_seg: int
     """Zero-based index matching ``CompiledSegment.i_seg``."""
-    stage: str
-    t_start_s: float
-    """Absolute start time of this segment (s)."""
-    t_end_s: float
-    """Absolute end time of this segment (s)."""
     i_start: int
     """First row index (inclusive) in ``RunResult.t_s`` / ``y``."""
     i_end: int
     """One-past-last row index (exclusive) in ``RunResult.t_s`` / ``y``."""
 
 
-@dataclass(frozen=True)
+@dataclass
 class RunResult:
     """Complete output of one simulation run.
 
@@ -55,76 +48,171 @@ class RunResult:
         spec_json: Canonical JSON spec used to produce this result.
     """
 
-    t_s: np.ndarray
-    y: np.ndarray
-    boundaries: list[SegmentBoundary]
     cache_key: str
     schema_version: int
     spec_json: str
+    order_json: str
+    cache_dir: str | None = None
+    t_s: np.ndarray | None = None
+    y: np.ndarray | None = None
+    boundaries: list[SegmentBoundary] = field(default_factory=list)
 
+    @property
+    def completed(self) -> bool:
+        return self.t_s is not None and self.y is not None
 
-def boundary_for_stage(
-    boundaries: list[SegmentBoundary],
-    *,
-    stage: str,
-    occurrence: int = 0,
-) -> SegmentBoundary:
-    """Return the ``SegmentBoundary`` for the given stage label and occurrence index."""
-    matches = [boundary for boundary in boundaries if boundary.stage == stage]
-    if occurrence < 0 or occurrence >= len(matches):
-        raise ValueError(f"stage occurrence out of range for stage={stage}: {occurrence}")
-    return matches[occurrence]
+    def set_data(
+        self,
+        *,
+        t_s: np.ndarray,
+        y: np.ndarray,
+        boundaries: list[SegmentBoundary],
+    ) -> None:
+        self.t_s = np.asarray(t_s, dtype=float)
+        self.y = np.asarray(y, dtype=float)
+        self.boundaries = list(boundaries)
 
+    def _cache_path(self) -> Path | None:
+        if self.cache_dir is None:
+            return None
+        root = Path(self.cache_dir)
+        root.mkdir(parents=True, exist_ok=True)
+        return root / f"{self.cache_key}.npz"
 
-def slice_result_by_boundary(
-    result: RunResult,
-    boundary: SegmentBoundary,
-    *,
-    rezero_time: bool = True,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Extract ``(t, y)`` arrays for one segment boundary.
+    def try_load(self) -> bool:
+        if self.completed:
+            return True
 
-    Args:
-        result: Full simulation output.
-        boundary: Segment boundary specifying the row range.
-        rezero_time: If ``True`` (default), subtract ``t[0]`` so time
-            starts at zero within the returned slice.
+        path = self._cache_path()
+        if path is None or not path.is_file():
+            return False
 
-    Returns:
-        ``(t, y)`` where ``t`` has shape ``(n,)`` and ``y`` has shape
-        ``(n, n_state)``.
-    """
-    i_start = int(boundary.i_start)
-    i_end = int(boundary.i_end)
-    if i_start < 0 or i_end > result.t_s.shape[0] or i_end <= i_start:
-        raise ValueError("invalid boundary indices for result arrays")
+        try:
+            with np.load(path, allow_pickle=False) as data:
+                completed = int(data["completed"].item())
+                if completed != 1:
+                    return False
 
-    t = np.asarray(result.t_s[i_start:i_end], dtype=float)
-    y = np.asarray(result.y[i_start:i_end, :], dtype=float)
-    if rezero_time and t.size > 0:
-        t = t - t[0]
-    return t, y
+                stored_spec_json = str(data["spec_json"].item())
+                stored_cache_key = str(data["cache_key"].item())
+                stored_order_json = str(data["order_json"].item())
+                if stored_spec_json != self.spec_json:
+                    return False
+                if stored_cache_key != self.cache_key:
+                    return False
+                if stored_order_json != self.order_json:
+                    return False
 
+                boundaries_json = str(data["boundaries_json"].item())
+                boundaries = boundaries_from_jsonable(json.loads(boundaries_json))
+                self.set_data(
+                    t_s=np.asarray(data["t_s"]),
+                    y=np.asarray(data["y"]),
+                    boundaries=boundaries,
+                )
+                return True
+        except Exception:
+            return False
 
-def slice_result_for_stage(
-    result: RunResult,
-    *,
-    stage: str,
-    occurrence: int = 0,
-    rezero_time: bool = True,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Extract ``(t, y)`` for a named stage, re-zeroing time by default."""
-    boundary = boundary_for_stage(result.boundaries, stage=stage, occurrence=occurrence)
-    return slice_result_by_boundary(result, boundary, rezero_time=rezero_time)
+    def save(self, *, timestep: float, reason: str = "completed", completed: int = 1) -> Path | None:
+        if not self.completed:
+            raise ValueError("cannot save an incomplete result")
 
+        path = self._cache_path()
+        if path is None:
+            return None
 
-def boundaries_to_jsonable(boundaries: list[SegmentBoundary]) -> list[dict[str, int | float | str]]:
+        boundaries_json = json.dumps(
+            boundaries_to_jsonable(self.boundaries),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        np.savez_compressed(
+            path,
+            t_s=self.t_s,
+            y=self.y,
+            timestep=float(timestep),
+            reason=str(reason),
+            completed=int(completed),
+            schema_version=int(self.schema_version),
+            cache_key=str(self.cache_key),
+            spec_json=str(self.spec_json),
+            order_json=str(self.order_json),
+            boundaries_json=boundaries_json,
+        )
+        return path
+
+    def stage_occurrences(self, compiled: list[object], stage: str) -> int:
+        return sum(
+            1
+            for boundary in self.boundaries
+            if 0 <= boundary.i_seg < len(compiled) and getattr(compiled[boundary.i_seg], "stage", None) == stage
+        )
+
+    def boundary_for_stage(
+        self,
+        compiled: list[object],
+        *,
+        stage: str,
+        occurrence: int = 0,
+    ) -> SegmentBoundary:
+        matches = [
+            boundary
+            for boundary in self.boundaries
+            if 0 <= boundary.i_seg < len(compiled) and getattr(compiled[boundary.i_seg], "stage", None) == stage
+        ]
+        if occurrence < 0 or occurrence >= len(matches):
+            raise ValueError(f"stage occurrence out of range for stage={stage}: {occurrence}")
+        return matches[occurrence]
+
+    def stage_bounds(
+        self,
+        compiled: list[object],
+        *,
+        stage: str,
+        occurrence: int = 0,
+    ) -> tuple[float, float]:
+        boundary = self.boundary_for_stage(compiled, stage=stage, occurrence=occurrence)
+        if boundary.i_seg < 0 or boundary.i_seg >= len(compiled):
+            raise ValueError(f"compiled segment missing for i_seg={boundary.i_seg}")
+        segment = compiled[boundary.i_seg]
+        return float(getattr(segment, "t_start_s")), float(getattr(segment, "t_end_s"))
+
+    def slice_by_boundary(
+        self,
+        boundary: SegmentBoundary,
+        *,
+        rezero_time: bool = True,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if self.t_s is None or self.y is None:
+            raise ValueError("result has no loaded trajectory data")
+
+        i_start = int(boundary.i_start)
+        i_end = int(boundary.i_end)
+        if i_start < 0 or i_end > self.t_s.shape[0] or i_end <= i_start:
+            raise ValueError("invalid boundary indices for result arrays")
+
+        t = np.asarray(self.t_s[i_start:i_end], dtype=float)
+        y = np.asarray(self.y[i_start:i_end, :], dtype=float)
+        if rezero_time and t.size > 0:
+            t = t - t[0]
+        return t, y
+
+    def slice_for_stage(
+        self,
+        compiled: list[object],
+        *,
+        stage: str,
+        occurrence: int = 0,
+        rezero_time: bool = True,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        boundary = self.boundary_for_stage(compiled, stage=stage, occurrence=occurrence)
+        return self.slice_by_boundary(boundary, rezero_time=rezero_time)
+
+def boundaries_to_jsonable(boundaries: list[SegmentBoundary]) -> list[dict[str, int]]:
     return [
         {
             "i_seg": boundary.i_seg,
-            "stage": boundary.stage,
-            "t_start_s": boundary.t_start_s,
-            "t_end_s": boundary.t_end_s,
             "i_start": boundary.i_start,
             "i_end": boundary.i_end,
         }
@@ -136,9 +224,6 @@ def boundaries_from_jsonable(items: list[dict[str, int | float | str]]) -> list[
     return [
         SegmentBoundary(
             i_seg=int(item["i_seg"]),
-            stage=str(item["stage"]),
-            t_start_s=float(item["t_start_s"]),
-            t_end_s=float(item["t_end_s"]),
             i_start=int(item["i_start"]),
             i_end=int(item["i_end"]),
         )

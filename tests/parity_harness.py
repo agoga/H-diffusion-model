@@ -122,11 +122,11 @@ def run_case(
 
     return {
         "case": case,
-        "t_legacy": ref.t_s,
-        "y_legacy": ref.y,
+        "t_ref": ref.t_s,
+        "y_ref": ref.y,
         "t_new": sim.t_s,
         "y_new": sim.y,
-        "y_new_on_legacy_t": y_interp,
+        "y_new_on_ref_t": y_interp,
         "rel_l2": metrics.rel_l2,
         "rel_linf": metrics.rel_linf,
         "baseline_source": ref.source,

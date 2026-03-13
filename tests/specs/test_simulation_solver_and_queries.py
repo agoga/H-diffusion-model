@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from hdiff.cache import CacheStore
-from hdiff.schedule import Sampling, Schedule, Segment
-from hdiff.sim import Simulation, SolverConfig
+from hdiff.schedule import Schedule, Segment
+from hdiff.sim import Sampling, Simulation, SolverConfig
 from hdiff.structure import (
     Arrhenius,
     BoundaryCondition,
@@ -147,22 +146,25 @@ def test_second_identical_run_hits_cache(tmp_path) -> None:
     )
     sampling = Sampling(base_out_dt_s=0.01, bootstrap_duration_s=0.005, bootstrap_max_dt_s=0.001)
     solver = make_fast_solver()
-    cache = CacheStore(tmp_path)
 
     sim1 = Simulation(
         structure=structure,
         schedule=schedule,
         sampling=sampling,
         solver=solver,
+        cache_dir=tmp_path,
     )
-    sim1.run(cache=cache)
-    assert sim1._last_cache_hit is False
+    sim1.run()
+    assert sim1.result is not None
 
     sim2 = Simulation(
         structure=structure,
         schedule=schedule,
         sampling=sampling,
         solver=solver,
+        cache_dir=tmp_path,
     )
-    sim2.run(cache=cache)
-    assert sim2._last_cache_hit is True
+    sim2.run()
+    assert sim2.result is not None
+    assert np.array_equal(sim1.result.t_s, sim2.result.t_s)
+    assert np.array_equal(sim1.result.y, sim2.result.y)

@@ -9,8 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from hdiff.schedule import Sampling
-from hdiff.sim import Simulation, SolverConfig
+from hdiff.sim import Sampling, Simulation, SolverConfig
 
 try:
     from tests.parity_cases import LAYER_NAMES

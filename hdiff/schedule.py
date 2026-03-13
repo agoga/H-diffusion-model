@@ -1,18 +1,11 @@
-"""Schedule and sampling dataclasses, plus schedule builder/parser utilities.
+"""Schedule dataclasses and schedule builder/parser utilities.
 
 A ``Schedule`` is a list of isothermal ``Segment`` objects, optionally repeated
 ``n_cycles`` times.  ``Schedule.compile()`` produces a flat list of
 ``CompiledSegment`` objects with absolute wall-clock times, which is what the
 solver consumes.
 
-A ``Sampling`` controls how densely the ODE integrator emits output points:
-
-* ``bootstrap_duration_s`` + ``bootstrap_max_dt_s``: at the start of each
-  segment the solver is constrained to small steps so rapid early transients
-  are resolved before the step-size adaptor is allowed to coarsen.
-* ``base_out_dt_s``: output grid spacing for the main (post-bootstrap) phase.
-  This value is fed to the PETSc step monitor via interpolation; it does *not*
-  directly constrain the internal solver step.
+Sampling policy is intentionally owned by ``sim.py``.
 
 Schedule string format:
     ``"<duration><unit>:<temperature><unit>, ..."``, e.g.
@@ -22,9 +15,10 @@ Schedule string format:
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Iterable
 
 
 @dataclass(frozen=True)
@@ -83,34 +77,6 @@ class CompiledSegment:
 
 
 @dataclass(frozen=True)
-class Sampling:
-    """Controls output density from the ODE integrator.
-
-    The solver always runs with adaptive time-stepping.  These parameters only
-    affect *which* time points are written to the ``RunResult`` arrays.
-    """
-
-    base_out_dt_s: float
-    """Target output spacing (s) during the main phase of each segment.  The
-    monitor interpolates to emit a point every this many seconds, independent
-    of the solver's internal step size."""
-    bootstrap_duration_s: float
-    """Length of the high-cadence bootstrap window at the start of each
-    segment (s).  Set to 0 to disable bootstrapping."""
-    bootstrap_max_dt_s: float
-    """Maximum internal solver step (and output spacing) during the bootstrap
-    window (s).  Should be much smaller than ``base_out_dt_s``."""
-
-    def validate(self) -> None:
-        if self.base_out_dt_s <= 0.0:
-            raise ValueError("base_out_dt_s must be > 0")
-        if self.bootstrap_duration_s < 0.0:
-            raise ValueError("bootstrap_duration_s must be >= 0")
-        if self.bootstrap_max_dt_s <= 0.0:
-            raise ValueError("bootstrap_max_dt_s must be > 0")
-
-
-@dataclass(frozen=True)
 class Schedule:
     """An ordered list of isothermal segments, optionally cycled."""
 
@@ -165,3 +131,182 @@ def compiled_segment_to_dict(segment: CompiledSegment) -> dict[str, Any]:
         "T_K": segment.T_K,
         "T_program": str(segment.T_program) if segment.T_program is not None else None,
     }
+
+
+_NUM_RE = r"(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+_DUR_RE = re.compile(rf"^\s*({_NUM_RE})\s*([smhSMH]?)\s*$")
+_TEMP_RE = re.compile(rf"^\s*({_NUM_RE})\s*([kKcC]?)\s*$")
+
+
+def _parse_duration_s(token: str) -> float:
+    match = _DUR_RE.match(token)
+    if not match:
+        raise ValueError(f"invalid duration token: {token}")
+    value = float(match.group(1))
+    unit = match.group(2).lower()
+    if unit in {"", "s"}:
+        return value
+    if unit == "m":
+        return value * 60.0
+    if unit == "h":
+        return value * 3600.0
+    raise ValueError(f"invalid duration unit: {token}")
+
+
+def _parse_temp_K(token: str) -> float:
+    match = _TEMP_RE.match(token)
+    if not match:
+        raise ValueError(f"invalid temperature token: {token}")
+    value = float(match.group(1))
+    unit = match.group(2).lower()
+    if unit in {"", "k"}:
+        return value
+    if unit == "c":
+        return value + 273.15
+    raise ValueError(f"invalid temperature unit: {token}")
+
+
+def parse_temp_schedule_spec(spec: str, stage_names: list[str] | None = None) -> Schedule:
+    """Parse a schedule string into a ``Schedule``.
+
+    Format: comma-separated ``<duration><unit>:<temperature><unit>`` pairs, e.g.
+    ``"600s:750C, 8000000s:250C"``.  Duration units: ``s`` (default), ``m``,
+    ``h``.  Temperature units: ``C`` (default), ``K``.
+    """
+    parts = [part.strip() for part in spec.split(",") if part.strip()]
+    if not parts:
+        raise ValueError("schedule spec must include at least one segment")
+
+    segments: list[Segment] = []
+    for index, part in enumerate(parts):
+        if ":" not in part:
+            raise ValueError(f"invalid schedule segment (missing ':'): {part}")
+        duration_token, temp_token = [piece.strip() for piece in part.split(":", 1)]
+        stage = (
+            stage_names[index]
+            if stage_names is not None and index < len(stage_names)
+            else f"stage_{index}"
+        )
+        segments.append(
+            Segment(
+                duration_s=_parse_duration_s(duration_token),
+                stage=stage,
+                T_K=_parse_temp_K(temp_token),
+            )
+        )
+
+    if stage_names is not None and len(stage_names) != len(segments):
+        raise ValueError(
+            f"stage_names length ({len(stage_names)}) must equal schedule segments ({len(segments)})"
+        )
+    return Schedule(segments=segments)
+
+
+def build_temp_schedule_spec(
+    *,
+    fire_C: int | float,
+    anneal_C: int | float,
+    fire_s: int | float,
+    anneal_s: int | float,
+    include_room: bool = False,
+    room_C: int | float = 0,
+    room_s: int | float = 0,
+    n_cycles: int = 1,
+) -> str:
+    """Build a schedule spec string for fire/anneal (optionally with room dwell)."""
+    if n_cycles < 1:
+        raise ValueError(f"n_cycles must be >= 1, got {n_cycles}")
+
+    cycle_parts: list[str] = [f"{float(fire_s):g}:{float(fire_C):g}C"]
+    if include_room and float(room_s) > 0.0:
+        cycle_parts.append(f"{float(room_s):g}:{float(room_C):g}C")
+    cycle_parts.append(f"{float(anneal_s):g}:{float(anneal_C):g}C")
+    return ", ".join(cycle_parts * int(n_cycles))
+
+
+def make_unfired_sweep(
+    anneal_temp: int | float,
+    *,
+    fire_temp: int | float = 25,
+    fire_s: int | float,
+    anneal_s: int | float,
+) -> tuple[list[str], list[str]]:
+    schedules = [
+        build_temp_schedule_spec(
+            fire_C=float(fire_temp),
+            anneal_C=float(anneal_temp),
+            fire_s=float(fire_s),
+            anneal_s=float(anneal_s),
+            include_room=False,
+        )
+    ]
+    return schedules, ["firing", "annealing"]
+
+
+def make_annealing_sweep(
+    anneal_temps: Iterable[int | float],
+    *,
+    fire_temp: int | float,
+    fire_s: int | float,
+    anneal_s: int | float,
+    include_room: bool,
+    room_temp: int | float,
+    room_s: int | float,
+    n_cycles: int = 1,
+) -> tuple[list[str], list[str]]:
+    schedules = [
+        build_temp_schedule_spec(
+            fire_C=float(fire_temp),
+            anneal_C=float(anneal_temp),
+            fire_s=float(fire_s),
+            anneal_s=float(anneal_s),
+            include_room=include_room,
+            room_C=float(room_temp),
+            room_s=float(room_s),
+            n_cycles=n_cycles,
+        )
+        for anneal_temp in anneal_temps
+    ]
+    stage_names = ["firing", "room", "annealing"] if include_room else ["firing", "annealing"]
+    return schedules, stage_names
+
+
+def make_firing_sweep(
+    firing_temps: Iterable[int | float],
+    *,
+    anneal_temp: int | float,
+    fire_s: int | float,
+    anneal_s: int | float,
+    include_room: bool,
+    room_temp: int | float,
+    room_s: int | float,
+    n_cycles: int = 1,
+) -> tuple[list[str], list[str]]:
+    schedules = [
+        build_temp_schedule_spec(
+            fire_C=float(firing_temp),
+            anneal_C=float(anneal_temp),
+            fire_s=float(fire_s),
+            anneal_s=float(anneal_s),
+            include_room=include_room,
+            room_C=float(room_temp),
+            room_s=float(room_s),
+            n_cycles=n_cycles,
+        )
+        for firing_temp in firing_temps
+    ]
+    stage_names = ["firing", "room", "annealing"] if include_room else ["firing", "annealing"]
+    return schedules, stage_names
+
+
+__all__ = [
+    "CompiledSegment",
+    "Schedule",
+    "Segment",
+    "build_temp_schedule_spec",
+    "compiled_segment_to_dict",
+    "make_annealing_sweep",
+    "make_firing_sweep",
+    "make_unfired_sweep",
+    "parse_temp_schedule_spec",
+]

@@ -14,7 +14,6 @@ python -m pytest tests/ -q
 Run one schedule directly:
 
 ```python
-from hdiff.cache import CacheStore
 from hdiff.defaults import DEFAULT_SAMPLING, DEFAULT_SOLVER, DEFAULT_STRUCTURE
 from hdiff.schedule import Schedule, Segment
 from hdiff.sim import Simulation
@@ -30,8 +29,9 @@ sim = Simulation(
     schedule=schedule,
     sampling=DEFAULT_SAMPLING,
     solver=DEFAULT_SOLVER,
+  cache_dir="sim_data",
 )
-result = sim.run(cache=CacheStore("sim_data"))
+result = sim.run()
 
 t_s, y = sim.layer_total("SiO$_x$", stage="annealing")  # cm^-3
 ```
@@ -53,11 +53,10 @@ custom = (
 ```
 hdiff/                 — simulation package (new clean-slate code)
   structure.py         — physical stack dataclasses (layers, traps, transport)
-  schedule.py          — schedule / sampling dataclasses + compile()
-  sim.py               — Simulation + SolverConfig; PETSc/TS integration
-  result.py            — RunResult; SegmentBoundary; slice helpers
-  cache.py             — CacheStore: NPZ on-disk cache keyed by spec SHA-256
-  campaign.py          — Campaign API + sweep builders for orchestrated runs
+  schedule.py          — schedule dataclasses + schedule parser/sweep templates
+  sim.py               — Simulation + Sampling + SolverConfig; PETSc/TS integration
+  result.py            — RunResult; SegmentBoundary; query + cache persistence
+  campaign.py          — orchestration over many simulations
 
 legacy/                — archived reference scripts/notebooks (not active API)
 
@@ -104,26 +103,13 @@ Each schedule segment is integrated in two phases:
 2. **Main** — free adaptive stepping; a `ts.setMonitor` callback interpolates
    output onto a regular `base_out_dt_s` grid.
 
-### Default sampling used by the direct quickstart
-
-| Parameter             | Default  |
-|-----------------------|----------|
-| `base_out_dt_s`       | 10 s     |
-| `bootstrap_duration_s`| 10 s     |
-| `bootstrap_max_dt_s`  | 1e-4 s   |
-
-### Default solver
-
-| Parameter | Default |
-|-----------|---------|
-| `rtol`    | 1e-5    |
-| `atol`    | 1e-10   |
-| backend   | PETSc Rosenbrock-W (`ts_type=rosw`) |
+For current default runtime parameters, use `hdiff.defaults.DEFAULT_SAMPLING`
+and `hdiff.defaults.DEFAULT_SOLVER` (source of truth: `hdiff/defaults.py`).
 
 ## Caching
 
-Results are stored as compressed NPZ files in `sim_data/` (or any directory you
-pass to `CacheStore`).  Each file is keyed by the SHA-256 hex digest of a
+Results are stored as compressed NPZ files in `sim_data/` (or any `cache_dir`
+you pass to `Simulation`).  Each file is keyed by the SHA-256 hex digest of a
 canonical JSON spec that covers structure, schedule, sampling, solver tolerances,
 and initial conditions.  Any change to those inputs produces a new key and a new
 file.
@@ -166,13 +152,8 @@ Use `hdiff.campaign.Campaign` as the primary orchestration path for sweeps.
 
 ## Layer stack
 
-| Label | Material | Thickness |
-|-------|----------|-----------|
-| A     | AlO_x       | 100 nm   |
-| B     | poly-Si     | 290 nm   |
-| C     | SiO_x       | 1.5 nm   |
-| D     | c-Si (near) | 608.5 nm |
-| E     | c-Si (bulk) | 50 µm    |
+The canonical stack definition is `hdiff.defaults.DEFAULT_STRUCTURE` in
+`hdiff/defaults.py`.
 
 ## Sweep workflows
 
@@ -209,87 +190,19 @@ Use `hdiff.viz` for composable plotting. The API is split into:
 - panel functions (`plot_trace_overlay`, `plot_abs_error`, `plot_rel_error`, `plot_layer_stage_sweep`, `plot_all_layers_for_stage`, `plot_sweep_heatmap`)
 - figure builders (`make_parity_figure`, `make_all_layers_over_phases_figure`)
 
-### Core plot 1: one layer during one stage for all simulations matching a fixed stage temperature
+To avoid README drift, plotting examples are maintained in code and notebooks:
 
-```python
-import matplotlib.pyplot as plt
-from hdiff.viz import plot_layer_stage_sweep
+- `hdiff/main.ipynb` (interactive workflow)
+- `tests/specs/test_viz_framework.py` (minimal callable examples)
+- `hdiff/viz.py` (API/docstrings for panel and figure builders)
 
-fig, ax = plt.subplots(figsize=(7.2, 4.8))
-plot_layer_stage_sweep(
-  ax,
-  simulations=campaign.simulations,
-  match_stage="firing",      # fix this stage temperature
-  target_temp_C=750.0,
-  layer="SiO$_x$",
-  kind="trapped",
-  plot_stage="annealing",    # plot this stage
-  x_units="hours",
-)
-```
+Common entry points:
 
-### Core plot 2: all layers over each phase for one simulation
-
-```python
-from hdiff.viz import make_all_layers_over_phases_figure
-
-sim = campaign.simulations[0]
-fig, axes = make_all_layers_over_phases_figure(
-  sim,
-  stages=["firing", "annealing"],
-  kind="total",
-  x_units="hours",
-)
-```
-
-### Other common plots
-
-- parity overlays and error panels: `make_parity_figure(results)`
-- peak-time vs stage-temperature scatter: `plot_peak_time_vs_stage_temperature(...)`
-- sweep metric heatmaps from tabular results: `plot_sweep_heatmap(...)`
-
-### Notebook quickstart
-
-The current example notebook is `hdiff/main.ipynb`.
-
-```python
-# See hdiff/main.ipynb for the direct-structure version used in this repo.
-```
-
-```python
-# Cell 2: core plot #1
-# One layer concentration during annealing for all runs with firing fixed at 750C
-import matplotlib.pyplot as plt
-from hdiff.viz import plot_layer_stage_sweep
-
-fig, ax = plt.subplots(figsize=(8.0, 5.0))
-plot_layer_stage_sweep(
-  ax,
-  simulations=simulations,
-  match_stage="firing",
-  target_temp_C=750.0,
-  layer="SiO$_x$",
-  kind="trapped",
-  plot_stage="annealing",
-  x_units="hours",
-)
-fig.tight_layout()
-```
-
-```python
-# Cell 3: core plot #2
-# All layers over each phase for one selected simulation
-from hdiff.viz import make_all_layers_over_phases_figure
-
-first_sim = simulations[0]
-fig, axes = make_all_layers_over_phases_figure(
-  first_sim,
-  stages=["firing", "annealing"],
-  kind="total",
-  x_units="hours",
-)
-fig.tight_layout()
-```
+- `plot_layer_stage_sweep(...)`
+- `make_areal_density_figure(...)`
+- `make_parity_figure(...)`
+- `plot_peak_time_vs_stage_temperature(...)`
+- `plot_sweep_heatmap(...)`
 
 ## Running tests
 

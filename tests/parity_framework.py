@@ -15,8 +15,8 @@ from typing import Any, Protocol
 
 import numpy as np
 
-from hdiff.schedule import Sampling, Schedule, Segment
-from hdiff.sim import Simulation, SolverConfig
+from hdiff.schedule import Schedule, Segment
+from hdiff.sim import Sampling, Simulation, SolverConfig
 from hdiff.defaults import DEFAULT_SAMPLING, DEFAULT_SOLVER, DEFAULT_STRUCTURE, DEFAULT_Y0
 from hdiff.structure import (
     Arrhenius,
