@@ -72,6 +72,7 @@ import numpy as np
 from .result import RunResult
 from .result import SegmentBoundary
 from .schedule import Schedule, compiled_segment_to_dict
+from .boundary import BoundaryFaceContext
 from .structure import Structure
 
 
@@ -273,50 +274,113 @@ class Simulation:
         return trap_rates, D_mobile
 
     def _build_rhs(self, ctx: dict[str, Any]):
-        """Return a PETSc-compatible RHS callable ``rhs(ts, t, u, f) -> int``.
+        """Build the RHS function for PETSc.
 
-        ``ctx`` is a mutable dict with keys ``'trap_rates'`` and ``'D_mobile'``
-        that the caller updates between segments (without re-binding ``rhs``).
-        This avoids re-registering the monitor function with PETSc on each
-        segment.
+        This returns the function PETSc calls to compute dy/dt from the current
+        state y.
+
+        The physics in this ODE comes from three pieces:
+        1. trapping and detrapping inside each layer
+        2. diffusion of mobile hydrogen between neighboring layers
+        3. flux through the left boundary
         """
+        # Shortcuts to precomputed indexing / geometry info.
         layout = self.layout
         layer_names = self.geom["layer_names"]
         inv_thickness = self.geom["inv_thickness_cm"]
         d_interfaces = self.geom["d_interface_cm"]
 
         def rhs(ts: Any, t: float, u: Any, f: Any) -> int:
+            # Current state vector.
             y = u.getArray(readonly=True)
+
+            # This will hold dy/dt.
             dy = np.zeros_like(y)
+
+            # Segment-dependent rates already computed outside this function.
             trap_rates: dict[tuple[str, str], tuple[float, float, float]] = ctx["trap_rates"]
             D_mobile: float = ctx["D_mobile"]
 
+            # ------------------------------------------------------------
+            # 1. Local trap kinetics in each layer
+            # ------------------------------------------------------------
+            # Each layer has one mobile-H population and possibly several traps.
+            #
+            # For each trap:
+            #   trap_flux   = k_trap   * mobile * available_capacity
+            #   detrap_flux = k_detrap * trapped
+            #
+            # Net positive means mobile H is getting trapped.
+            # That same amount is removed from the mobile population so mass is
+            # just moving between mobile and trapped states within the layer.
             for layer in self.structure.layers:
                 mobile_idx = layout["idx_mobile"][layer.name]
                 mobile_value = y[mobile_idx]
                 material = self.structure.materials[layer.material_id]
-                
+
                 for trap in material.traps:
                     trap_idx = layout["idx_trapped"][(layer.name, trap.id)]
                     trapped_value = y[trap_idx]
                     k_trap, k_detrap, capacity = trap_rates[(layer.name, trap.id)]
+
+                    # Remaining room in the trap.
                     available = max(capacity - trapped_value, 0.0)
+
                     trap_flux = k_trap * mobile_value * available
                     detrap_flux = k_detrap * trapped_value
                     net = trap_flux - detrap_flux
+
                     dy[trap_idx] += net
                     dy[mobile_idx] -= net
 
+            # ------------------------------------------------------------
+            # 2. Diffusion between neighboring layers
+            # ------------------------------------------------------------
+            # Each layer is one FV cell.
+            #
+            # We compute the mobile-H flux across each interface from the
+            # concentration difference between adjacent cells.
+            #
+            # Positive flux means stuff flows from the left cell to the right one.
+            # That lowers the left cell concentration and raises the right cell
+            # concentration.
             for i in range(len(layer_names) - 1):
                 left_layer = layer_names[i]
                 right_layer = layer_names[i + 1]
                 left_idx = layout["idx_mobile"][left_layer]
                 right_idx = layout["idx_mobile"][right_layer]
+
                 grad_term = (y[left_idx] - y[right_idx]) / d_interfaces[i]
                 flux = D_mobile * grad_term
+
                 dy[left_idx] -= flux * inv_thickness[i]
                 dy[right_idx] += flux * inv_thickness[i + 1]
 
+            # ------------------------------------------------------------
+            # 3. Left boundary flux
+            # ------------------------------------------------------------
+            # Ask the boundary-condition object how much mobile H is flowing into
+            # the domain through the left face right now.
+            #
+            # Closed boundary -> returns 0
+            # Robin boundary  -> returns k * (reservoir - cell_conc)
+            #
+            # The BC returns a face flux, so we convert that into the first-cell
+            # concentration derivative by dividing by the first-cell thickness.
+            left_idx = layout["idx_mobile"][layer_names[0]]
+
+            left_ctx = BoundaryFaceContext(
+                t_s=float(t),
+                T_K=float(ctx["T_K"]),
+                C_cell=float(y[left_idx]),
+                dx_cm=float(1.0 / inv_thickness[0]),
+                D_mobile_cm2_s=float(D_mobile),
+            )
+
+            J_left_in = self.structure.bc.left_flux_into_domain(left_ctx)
+            dy[left_idx] += J_left_in * inv_thickness[0]
+
+            # Hand dy/dt back to PETSc.
             f.setArray(dy)
             return 0
 
@@ -351,6 +415,7 @@ class Simulation:
         rhs_ctx: dict[str, Any] = {
             "trap_rates": {},
             "D_mobile": 0.0,
+            "T_K": 0.0,
         }
         rhs = self._build_rhs(rhs_ctx)
 
@@ -430,6 +495,7 @@ class Simulation:
             trap_rates, D_mobile = self._rates_for_segment(segment.T_K)
             rhs_ctx["trap_rates"] = trap_rates
             rhs_ctx["D_mobile"] = D_mobile
+            rhs_ctx["T_K"] = float(segment.T_K)
 
             i_start = len(times) - 1
             seg_start = segment.t_start_s

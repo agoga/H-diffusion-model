@@ -6,8 +6,9 @@ Use `Material.with_trap(...)` for small changes.
 
 from __future__ import annotations
 
+from .boundary import BoundaryCondition
 from .sim import Sampling, SolverConfig
-from .structure import Arrhenius, BoundaryCondition, Layer, Material, Structure, Transport, TrapSpec
+from .structure import Arrhenius, Layer, Material, Structure, Transport, TrapSpec
 
 
 DEFAULT_ALOX = Material(id="alox",
@@ -62,7 +63,7 @@ def _stack_structure(*, alox: Material, poly: Material, siox: Material, csi: Mat
             Layer(name=r"c-Si (near)", thickness_cm=608.5e-7, material_id="csi"),
             Layer(name=r"c-Si (bulk)", thickness_cm=50e-4, material_id="csi"),
         ],
-        bc=BoundaryCondition(kind="closed_closed", params={}),
+        bc = BoundaryCondition.closed_closed(),
         transport=Transport(prefactor=1e-3, hop_Ea_eV=0.5),
         conc_scale=1e22,
     )

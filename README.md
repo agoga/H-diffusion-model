@@ -52,6 +52,7 @@ custom = (
 
 ```
 hdiff/                 — simulation package (new clean-slate code)
+  boundary.py          — boundary-law models (closed/robin) and BC context
   structure.py         — physical stack dataclasses (layers, traps, transport)
   schedule.py          — schedule dataclasses + schedule parser/sweep templates
   sim.py               — Simulation + Sampling + SolverConfig; PETSc/TS integration

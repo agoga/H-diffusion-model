@@ -17,6 +17,13 @@ from .campaign import (
     other_stage_name,
     stage_temperature_C,
 )
+from .boundary import (
+    BoundaryCondition,
+    BoundaryFaceContext,
+    ClosedBoundary,
+    LeftBoundaryLaw,
+    OpenAirBoundary,
+)
 from .result import RunResult, SegmentBoundary
 from .schedule import (
     CompiledSegment,
@@ -31,7 +38,6 @@ from .schedule import (
 from .sim import Sampling, Simulation, SolverConfig, build_state_layout
 from .structure import (
     Arrhenius,
-    BoundaryCondition,
     Layer,
     Material,
     Structure,
@@ -53,6 +59,8 @@ from .viz import (
 __all__ = [
     "Arrhenius",
     "BoundaryCondition",
+    "BoundaryFaceContext",
+    "ClosedBoundary",
     "CompiledSegment",
     "DEFAULT_ALOX",
     "DEFAULT_CSI",
@@ -64,6 +72,7 @@ __all__ = [
     "DEFAULT_Y0",
     "Layer",
     "Material",
+    "LeftBoundaryLaw",
     "filter_simulations_by_stage_temperature",
     "find_simulation",
     "make_annealing_sweep",
@@ -73,6 +82,7 @@ __all__ = [
     "other_stage_name",
     "Campaign",
     "RunResult",
+    "OpenAirBoundary",
     "Sampling",
     "Schedule",
     "Segment",

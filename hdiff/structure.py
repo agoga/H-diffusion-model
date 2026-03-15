@@ -8,14 +8,16 @@ Hierarchy::
     │       ├── trap_kin: Arrhenius   (trapping rate k_trap)
     │       └── detrap_kin: Arrhenius (detrapping rate k_detrap)
     ├── layers: list[Layer]           (ordered left→right)
-    ├── bc: BoundaryCondition         (only "closed_closed" in v1)
+    ├── bc: BoundaryCondition         (closed_closed or open_closed)
     ├── transport: Transport           (mobile-H diffusivity)
     └── conc_scale: float             (cm^-3; solver units × conc_scale = physical units)
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
+
+from .boundary import BoundaryCondition
 
 
 @dataclass(frozen=True)
@@ -110,16 +112,6 @@ class Layer:
     """Key into Structure.materials."""
 
 
-@dataclass(frozen=True)
-class BoundaryCondition:
-    """Boundary condition for the outermost layer faces.
-
-    Only ``kind='closed_closed'`` (zero-flux at both surfaces) is supported in v1.
-    """
-
-    kind: str = "closed_closed"
-    params: dict[str, float] = field(default_factory=dict)
-
 
 @dataclass(frozen=True)
 class Transport:
@@ -196,6 +188,11 @@ class Structure:
             ),
         )
 
+    def with_bc(self, bc: BoundaryCondition) -> "Structure":
+        """Return a copy with boundary conditions replaced."""
+
+        return replace(self, bc=bc)
+
     def validate(self) -> None:
         if self.conc_scale <= 0.0:
             raise ValueError("conc_scale must be > 0")
@@ -247,8 +244,7 @@ class Structure:
                         f"activation energies must be >= 0 for {material.id}:{trap.id}"
                     )
 
-        if self.bc.kind != "closed_closed":
-            raise ValueError("only closed_closed boundary condition is supported in v1")
+        self.bc.validate()
 
     def build_fv_geometry(self) -> dict[str, list[float] | list[str]]:
         """Pre-compute finite-volume geometry quantities.
@@ -276,3 +272,6 @@ class Structure:
             "inv_thickness_cm": inv_thickness_cm,
             "d_interface_cm": d_interface_cm,
         }
+
+
+
