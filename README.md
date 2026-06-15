@@ -1,52 +1,7 @@
 # H-diffusion model
 
 Hydrogen diffusion and trapping model for layered solar-cell stacks.
-The current code centers on typed structure definitions, cached schedule runs,
-and stage-sliced plotting.
 
-## Quick start
-
-```bash
-conda activate diff
-python -m pytest tests/ -q
-```
-
-Run one schedule directly:
-
-```python
-from hdiff.defaults import DEFAULT_SAMPLING, DEFAULT_SOLVER, DEFAULT_STRUCTURE
-from hdiff.schedule import Schedule, Segment
-from hdiff.sim import Simulation
-
-schedule = Schedule(
-  segments=[
-    Segment(duration_s=600.0, stage="firing", T_C=750.0),
-    Segment(duration_s=8_000_000.0, stage="annealing", T_C=250.0),
-  ],
-)
-sim = Simulation(
-    structure=DEFAULT_STRUCTURE,
-    schedule=schedule,
-    sampling=DEFAULT_SAMPLING,
-    solver=DEFAULT_SOLVER,
-  cache_dir="sim_data",
-)
-result = sim.run()
-
-t_s, y = sim.layer_total("SiO$_x$", stage="annealing")  # cm^-3
-```
-
-Adjust a default without rebuilding the whole structure:
-
-```python
-from hdiff.defaults import DEFAULT_STRUCTURE
-
-custom = (
-  DEFAULT_STRUCTURE
-  .with_material("csi", trap_id="t1", trap_nu=5e13)
-  .with_transport(prefactor=2e-3)
-)
-```
 
 ## Repository layout
 
@@ -90,8 +45,8 @@ and `hdiff.defaults.DEFAULT_SOLVER` (source of truth: `hdiff/defaults.py`).
 ## Caching
 
 Results are stored as compressed NPZ files in `sim_data/` (or any `cache_dir`
-you pass to `Simulation`).  Each file is keyed by the SHA-256 hex digest of a
-canonical JSON spec that covers structure, schedule, sampling, solver tolerances,
+you pass to `Simulation`).  Each file is keyed by the SHA-256 hex digest of a 
+JSON spec that covers structure, schedule, sampling, solver tolerances,
 and initial conditions.  Any change to those inputs produces a new key and a new
 file.
 
@@ -171,7 +126,7 @@ Use `hdiff.viz` for composable plotting. The API is split into:
 - panel functions (`plot_trace_overlay`, `plot_abs_error`, `plot_rel_error`, `plot_layer_stage_sweep`, `plot_all_layers_for_stage`, `plot_sweep_heatmap`)
 - figure builders (`make_parity_figure`, `make_all_layers_over_phases_figure`)
 
-To avoid README drift, plotting examples are maintained in code and notebooks:
+Plotting examples are maintained in code and notebooks:
 
 - `hdiff/main.ipynb` (interactive workflow)
 - `tests/specs/test_viz_framework.py` (minimal callable examples)
@@ -205,6 +160,3 @@ python -m pytest tests/ -q -s -m basic_ci
 The simulation stack requires `petsc4py` + PETSc.  Analysis dependencies:
 `numpy`, `matplotlib`, `pandas`, `scipy`.
 
-```bash
-conda activate diff          # provides petsc4py, numpy, matplotlib, pandas, scipy
-```
