@@ -6,8 +6,8 @@ Hydrogen diffusion and trapping model for layered solar-cell stacks.
 ## Repository layout
 
 ```
-hdiff/                 — simulation package (new clean-slate code)
-  boundary.py          — boundary-law models (closed/robin) and BC context
+hdiff/                 — simulation package 
+  boundary.py          — boundary conditions 
   structure.py         — physical stack dataclasses (layers, traps, transport)
   schedule.py          — schedule dataclasses + schedule parser/sweep templates
   sim.py               — Simulation + Sampling + SolverConfig; PETSc/TS integration
@@ -24,7 +24,7 @@ tests/
   tests.ipynb          — interactive diagnostic notebook
 
 sim_data/              — cache directory for new-code NPZ results
-origin_exports/        — CSV exports used for quick visual debugging only
+origin_exports/        — CSV exports
 ```
 
 
